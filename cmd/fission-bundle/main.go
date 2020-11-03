@@ -321,6 +321,8 @@ Options:
 			storage = storagesvc.NewS3Storage()
 		} else if arguments["--storageType"] == string(storagesvc.StorageTypeLocal) {
 			storage = storagesvc.NewLocalStorage("/fission")
+		} else if arguments["--storageType"] == string(storagesvc.StorageTypeGCS) {
+			storage = storagesvc.NewGCSStorage()
 		}
 		runStorageSvc(logger, port, storage)
 	}

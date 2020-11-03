@@ -50,6 +50,8 @@ const (
 	StorageTypeLocal StorageType = "local"
 	// StorageTypeS3 is a constant to hold S3 storage type name literal
 	StorageTypeS3 StorageType = "s3"
+	//StorageTypeGCS is a constant to hold GCS storage type name literal
+	StorageTypeGCS StorageType = "gcs"
 	// PaginationSize is a constant to hold no of pages
 	PaginationSize int = 10
 )
@@ -65,7 +67,7 @@ var (
 // MakeStowClient create a new StowClient for given storage
 func MakeStowClient(logger *zap.Logger, storage Storage) (*StowClient, error) {
 	storageType := getStorageType(storage)
-	if strings.Compare(storageType, "local") == 1 && strings.Compare(storageType, "s3") == 1 {
+	if strings.Compare(storageType, "local") == 1 && strings.Compare(storageType, "s3") == 1 && strings.Compare(storageType, "gcs") == 1 {
 		return nil, errors.New("Storage types other than 'local' and 's3' are not implemented")
 	}
 
