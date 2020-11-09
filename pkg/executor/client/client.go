@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -67,13 +68,21 @@ func MakeClient(logger *zap.Logger, executorUrl string) *Client {
 
 func (c *Client) GetServiceForFunction(ctx context.Context, metadata *metav1.ObjectMeta) (string, error) {
 	executorUrl := c.executorUrl + "/v2/getServiceForFunction"
+	r, body := io.Pipe()
+	go func() {
+		defer body.Close()
+		err := json.NewEncoder(body).Encode(metadata)
+		if err != nil {
+			body.CloseWithError(errors.Wrap(err, "could not marshal request body for getting service for function"))
+		}
+	}()
 
-	body, err := json.Marshal(metadata)
+	_, err := io.Copy(body, r)
 	if err != nil {
-		return "", errors.Wrap(err, "could not marshal request body for getting service for function")
+		return "", errors.Wrap(err, "Error copying json body ")
 	}
 
-	resp, err := ctxhttp.Post(ctx, c.httpClient, executorUrl, "application/json", bytes.NewReader(body))
+	resp, err := ctxhttp.Post(ctx, c.httpClient, executorUrl, "application/json", r)
 	if err != nil {
 		return "", errors.Wrap(err, "error posting to getting service for function")
 	}
