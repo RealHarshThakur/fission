@@ -47,6 +47,7 @@ const (
 )
 
 type (
+	ocTransport     ochttp.Transport
 	functionHandler struct {
 		logger                   *zap.Logger
 		fmap                     *functionServiceMap
@@ -82,15 +83,17 @@ type (
 		svcAddrRetryCount int
 	}
 
-	// A layer on top of http.DefaultTransport, with retries.
+	// RetryingRoundTripper is a layer on top of http.DefaultTransport, with retries.
 	RetryingRoundTripper struct {
 		logger           *zap.Logger
 		funcHandler      *functionHandler
 		funcTimeout      time.Duration
 		closeContextFunc *context.CancelFunc
-		serviceUrl       *url.URL
+		serviceURL       *url.URL
+		transport        ocTransport
 		urlFromCache     bool
 		totalRetry       int
+		old              bool
 	}
 
 	// To keep the request body open during retries, we create an interface with Close operation being a no-op.
@@ -145,9 +148,14 @@ func (w *fakeCloseReadCloser) RealClose() error {
 func (roundTripper *RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// set the timeout for transport context
 	roundTripper.addForwardedHostHeader(req)
+	var transport *http.Transport
 
-	transport := roundTripper.getDefaultTransport()
-	ocRoundTripper := &ochttp.Transport{Base: transport}
+	// If new request arrives, connection is created and stored in the struct
+	if roundTripper.old == false {
+		transport = roundTripper.getDefaultTransport()
+		roundTripper.transport.Base = transport
+		roundTripper.old = true
+	}
 
 	executingTimeout := roundTripper.funcHandler.tsRoundTripperParams.timeout
 
@@ -184,7 +192,7 @@ func (roundTripper *RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 		// trying to get new service url from cache/executor.
 		if retryCounter == 0 {
 			// get function service url from cache or executor
-			roundTripper.serviceUrl, err = roundTripper.funcHandler.getServiceEntryFromExecutor()
+			roundTripper.serviceURL, err = roundTripper.funcHandler.getServiceEntryFromExecutor()
 			if err != nil {
 				// We might want a specific error code or header for fission failures as opposed to
 				// user function bugs.
@@ -212,13 +220,13 @@ func (roundTripper *RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 			if roundTripper.funcHandler.function.Spec.InvokeStrategy.ExecutionStrategy.ExecutorType == fv1.ExecutorTypePoolmgr {
 				defer func(fn *fv1.Function, serviceUrl *url.URL) {
 					go roundTripper.funcHandler.unTapService(fn, serviceUrl)
-				}(roundTripper.funcHandler.function, roundTripper.serviceUrl)
+				}(roundTripper.funcHandler.function, roundTripper.serviceURL)
 			}
 
 			// modify the request to reflect the service url
 			// this service url comes from executor response
-			req.URL.Scheme = roundTripper.serviceUrl.Scheme
-			req.URL.Host = roundTripper.serviceUrl.Host
+			req.URL.Scheme = roundTripper.serviceURL.Scheme
+			req.URL.Host = roundTripper.serviceURL.Host
 
 			// To keep the function run container simple, it
 			// doesn't do any routing.  In the future if we have
@@ -230,7 +238,7 @@ func (roundTripper *RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 			// Overwrite request host with internal host,
 			// or request will be blocked in some situations
 			// (e.g. istio-proxy)
-			req.Host = roundTripper.serviceUrl.Host
+			req.Host = roundTripper.serviceURL.Host
 		}
 
 		// over-riding default settings.
@@ -245,7 +253,7 @@ func (roundTripper *RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 		newReq := roundTripper.setContext(req)
 
 		// forward the request to the function service
-		resp, err := ocRoundTripper.RoundTrip(newReq)
+		resp, err := roundTripper.transport.Base.RoundTrip(newReq)
 		if err == nil {
 			// return response back to user
 			return resp, nil
@@ -316,10 +324,10 @@ func (roundTripper RetryingRoundTripper) getDefaultTransport() *http.Transport {
 	// but without Dialer since we will change it later.
 	return &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          10000,
+		IdleConnTimeout:       180 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: 180 * time.Second,
 		// Default disables caching, Please refer to issue and specifically comment:
 		// https://github.com/fission/fission/issues/723#issuecomment-398781995
 		// You can change it by setting environment variable "ROUTER_ROUND_TRIP_DISABLE_KEEP_ALIVE"
@@ -613,7 +621,7 @@ func (fh functionHandler) collectFunctionMetric(start time.Time, rrt *RetryingRo
 
 	// tapService before invoking roundTrip for the serviceUrl
 	if rrt.urlFromCache {
-		fh.tapService(fh.function, rrt.serviceUrl)
+		fh.tapService(fh.function, rrt.serviceURL)
 	}
 
 	fh.logger.Debug("Request complete", zap.String("function", fh.function.ObjectMeta.Name),
